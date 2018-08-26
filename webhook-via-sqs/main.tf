@@ -1,12 +1,15 @@
 variable "region" {
+  description = "The AWS region to deploy the webhook solution on."
   type = "string"
 }
 
 variable "profile" {
+  description = "The AWS profile to use"
   type = "string"
 }
 
 variable "bitbucket-hook-uuid" {
+  description = "The Bitbucket Hook ID. Leave empty if choosing GitHub"
   type = "string"
 }
 
@@ -21,6 +24,21 @@ variable "bitbucket-ip-range" {
     "2401:1d80:1010::/64",
     "2401:1d80:1003::/64",
   ]
+}
+
+provider "github" {}
+
+data "github_ip_ranges" "github-ip-ranges" {}
+
+variable "github-secret" {
+  description = "The GitHub webhook secret. Leave empty if choosing Bitbucket."
+  type = "string"
+}
+
+locals {
+  git_ip_ranges = "${coalescelist(var.bitbucket-hook-uuid,data.github_ip_ranges.github-ip-ranges.hooks)}"
+  stage_variable_name = "${var.bitbucket-hook-uuid != "" ? "HookID" : "GithubSecret"}"
+  stage_variable_value = "${var.bitbucket-hook-uuid != "" ? var.bitbucket-hook-uuid : var.github-secret}"
 }
 
 provider "aws" {
@@ -90,7 +108,7 @@ data "aws_iam_policy_document" "limit-access-to-bitbucket" {
 
     condition {
       test     = "NotIpAddress"
-      values   = ["${var.bitbucket-ip-range}"]
+      values   = ["${local.git_ip_ranges}"]
       variable = "aws:SourceIp"
     }
   }
@@ -161,9 +179,8 @@ resource "aws_api_gateway_method" "build-trigger-method" {
     "method.request.header.X-Event-Key"      = true
     "method.request.header.X-Hook-UUID"      = true
     "method.request.header.X-Request-UUID"   = true
+    "method.request.header.X-Hub-Signature"  = true
   }
-
-  //request_validator_id = "${aws_api_gateway_request_validator.validate-calls-from-bitbucket.id}"
 }
 
 resource "aws_api_gateway_method_response" "build-trigger-method-response" {
@@ -182,7 +199,7 @@ resource "aws_api_gateway_deployment" "v1" {
   stage_name  = "v1"
 
   variables {
-    "HookID" = "${var.bitbucket-hook-uuid}"
+    "${local.stage_variable_name}" = "${local.stage_variable_value}"
   }
 
   depends_on = ["aws_api_gateway_integration.build-trigger-integration-to-sqs"]
